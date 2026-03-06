@@ -1,4 +1,4 @@
-tunnel: vulnhawk
+tunnel: c7a01e00-74e6-4931-9bfe-f3bc36ae3a8a
 credentials-file: /etc/cloudflared/vulnhawk.json
 
 ingress:
