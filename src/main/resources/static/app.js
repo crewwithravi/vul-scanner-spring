@@ -150,10 +150,13 @@ async function runScan() {
   startStepAnimation();
 
   try {
-    const data = await api("/scan", {
+    // Start scan — server returns immediately with scan_id
+    const { scan_id } = await api("/scan", {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    // Poll until done
+    const data = await pollScanStatus(scan_id);
     stopStepAnimation();
     showResult(data.result);
   } catch (e) {
@@ -165,6 +168,27 @@ async function runScan() {
     elapsedInterval = null;
     $("#scan-loading").classList.add("hidden");
   }
+}
+
+async function pollScanStatus(scanId) {
+  return new Promise((resolve, reject) => {
+    const interval = setInterval(async () => {
+      try {
+        const data = await api(`/scan/${scanId}/status`);
+        if (data.status === "completed") {
+          clearInterval(interval);
+          resolve(data);
+        } else if (data.status === "failed") {
+          clearInterval(interval);
+          reject(new Error(data.error || "Scan failed"));
+        }
+        // "running" — keep polling
+      } catch (e) {
+        clearInterval(interval);
+        reject(e);
+      }
+    }, 3000);
+  });
 }
 
 

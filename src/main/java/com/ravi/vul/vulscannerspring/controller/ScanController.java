@@ -18,24 +18,29 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * VulnHawk REST API — matches the contract expected by app.js.
- *
- * Endpoints:
- *   GET  /             → serves index.html (handled by Spring MVC static resources)
- *   GET  /health       → LLM + backend health status
- *   POST /scan         → run vulnerability scan
- *   GET  /history      → list past scans
- *   GET  /history/{id} → retrieve a specific scan
- *   DELETE /history/{id} → delete a scan
- */
 @RestController
 @CrossOrigin
 public class ScanController {
 
     private static final Logger log = LoggerFactory.getLogger(ScanController.class);
 
+    // ── In-progress scan job tracking ─────────────────────────────────────────
+    private static class ScanJob {
+        volatile String status = "running";
+        volatile String result;
+        volatile String error;
+    }
+
+    private final Map<Long, ScanJob> jobs = new ConcurrentHashMap<>();
+    private final AtomicLong jobIdGen = new AtomicLong(1);
+    private final ExecutorService scanExecutor = Executors.newFixedThreadPool(3);
+
+    // ── Dependencies ──────────────────────────────────────────────────────────
     private final ScanOrchestrationService orchestration;
     private final ScanHistoryService history;
     private final RestClient http = RestClient.create();
@@ -71,7 +76,6 @@ public class ScanController {
         resp.put("status", "ok");
         resp.put("llm_vendor", llmVendor);
 
-        // Check Ollama reachability
         Map<String, Object> ollamaStatus = new LinkedHashMap<>();
         ollamaStatus.put("base_url", ollamaBaseUrl);
         ollamaStatus.put("model", ollamaModel);
@@ -83,7 +87,6 @@ public class ScanController {
             ollamaStatus.put("error", e.getMessage());
         }
         resp.put("ollama", ollamaStatus);
-
         resp.put("openai",    Map.of("api_key_set", !openAiKey.isBlank()));
         resp.put("anthropic", Map.of("api_key_set", !anthropicKey.isBlank()));
         resp.put("google",    Map.of("api_key_set", !googleKey.isBlank()));
@@ -91,7 +94,7 @@ public class ScanController {
         return ResponseEntity.ok(resp);
     }
 
-    // ── Scan ─────────────────────────────────────────────────────────────────
+    // ── Scan (async) ─────────────────────────────────────────────────────────
 
     @PostMapping("/scan")
     public ResponseEntity<?> scan(@RequestBody ScanRequest request) {
@@ -100,34 +103,58 @@ public class ScanController {
             return ResponseEntity.badRequest().body(Map.of("detail", "Either github_url or input must be provided."));
         }
 
-        try {
-            String report;
-            String scanKey, displayName, inputType, buildSystem = "";
+        final long jobId = jobIdGen.getAndIncrement();
+        final ScanJob job = new ScanJob();
+        jobs.put(jobId, job);
 
-            if (request.github_url() != null && !request.github_url().isBlank()) {
-                String[] keyName = ScanHistoryService.scanKeyForUrl(request.github_url());
-                scanKey = keyName[0]; displayName = keyName[1]; inputType = "url";
-                log.info("Scan request: GitHub URL = {}", request.github_url());
-                report = orchestration.scanFromUrl(request.github_url());
-            } else {
-                String[] keyName = ScanHistoryService.scanKeyForDeps(request.input());
-                scanKey = keyName[0]; displayName = keyName[1]; inputType = "dep-list";
-                log.info("Scan request: dep list ({} chars)", request.input().length());
-                report = orchestration.scanFromDepList(request.input());
+        final String githubUrl = request.github_url();
+        final String depInput  = request.input();
+
+        scanExecutor.submit(() -> {
+            try {
+                String report;
+                String scanKey, displayName, inputType, buildSystem = "";
+
+                if (githubUrl != null && !githubUrl.isBlank()) {
+                    String[] kn = ScanHistoryService.scanKeyForUrl(githubUrl);
+                    scanKey = kn[0]; displayName = kn[1]; inputType = "url";
+                    log.info("Scan job #{}: GitHub URL = {}", jobId, githubUrl);
+                    report = orchestration.scanFromUrl(githubUrl);
+                } else {
+                    String[] kn = ScanHistoryService.scanKeyForDeps(depInput);
+                    scanKey = kn[0]; displayName = kn[1]; inputType = "dep-list";
+                    log.info("Scan job #{}: dep list ({} chars)", jobId, depInput.length());
+                    report = orchestration.scanFromDepList(depInput);
+                }
+
+                history.save(scanKey, displayName, inputType, buildSystem, report);
+                job.result = report;
+                job.status = "completed";
+                log.info("Scan job #{} completed", jobId);
+
+            } catch (Exception e) {
+                log.error("Scan job #{} failed", jobId, e);
+                job.error = e.getMessage();
+                job.status = "failed";
             }
+        });
 
-            // Save to history
-            history.save(scanKey, displayName, inputType, buildSystem, report);
+        return ResponseEntity.accepted().body(Map.of("scan_id", jobId, "status", "running"));
+    }
 
-            return ResponseEntity.ok(Map.of("result", report));
+    // ── Scan status (polling) ─────────────────────────────────────────────────
 
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("detail", e.getMessage()));
-        } catch (Exception e) {
-            log.error("Scan failed", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Map.of("detail", "Scan failed: " + e.getMessage()));
-        }
+    @GetMapping("/scan/{id}/status")
+    public ResponseEntity<?> scanStatus(@PathVariable long id) {
+        ScanJob job = jobs.get(id);
+        if (job == null) return ResponseEntity.notFound().build();
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("scan_id", id);
+        resp.put("status", job.status);
+        if ("completed".equals(job.status)) resp.put("result", job.result);
+        if ("failed".equals(job.status))    resp.put("error",  job.error);
+        return ResponseEntity.ok(resp);
     }
 
     // ── History ───────────────────────────────────────────────────────────────
@@ -141,7 +168,6 @@ public class ScanController {
     public ResponseEntity<?> getHistory(@PathVariable long id) {
         Optional<HistoryItem> item = history.findById(id);
         if (item.isEmpty()) return ResponseEntity.notFound().build();
-        // Frontend expects { report_md: "..." }
         return ResponseEntity.ok(Map.of("report_md", item.get().getReportMd()));
     }
 
@@ -154,9 +180,6 @@ public class ScanController {
 
     // ── Static root ──────────────────────────────────────────────────────────
 
-    /**
-     * Serve index.html at "/" so the SPA loads when navigating to the root.
-     */
     @GetMapping(value = "/", produces = MediaType.TEXT_HTML_VALUE)
     public ResponseEntity<byte[]> root() throws java.io.IOException {
         byte[] html = new ClassPathResource("static/index.html").getInputStream().readAllBytes();
