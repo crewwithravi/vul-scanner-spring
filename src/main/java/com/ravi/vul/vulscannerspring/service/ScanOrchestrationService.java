@@ -222,7 +222,7 @@ public class ScanOrchestrationService {
                 .tools(tools)
                 .call()
                 .content();
-            vulnJson = extractJson(agent2Result);
+            vulnJson = extractJsonObject(agent2Result);
             // Validate it's a proper vuln report
             Map<String, Object> check = om.readValue(vulnJson, Map.class);
             if (!check.containsKey("vulnerabilities")) throw new RuntimeException("Invalid vuln report");
@@ -548,6 +548,19 @@ public class ScanOrchestrationService {
         // Try JSON object
         start = text.indexOf('{');
         end = text.lastIndexOf('}');
+        if (start >= 0 && end > start) return text.substring(start, end + 1);
+        return text;
+    }
+
+    /** Like extractJson but prefers JSON object ({}) over array ([]) */
+    private String extractJsonObject(String text) {
+        if (text == null) return "{}";
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start >= 0 && end > start) return text.substring(start, end + 1);
+        // Fallback to array
+        start = text.indexOf('[');
+        end = text.lastIndexOf(']');
         if (start >= 0 && end > start) return text.substring(start, end + 1);
         return text;
     }
