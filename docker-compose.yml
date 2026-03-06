@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+
+  vulnhawk:
+    build: .
+    container_name: vulnhawk
+    restart: unless-stopped
+    # No host port binding needed — cloudflared reaches it via Docker network
+    expose:
+      - "8080"
+    environment:
+      # LLM vendor — uses Ollama on the host GPU by default
+      LLM_VENDOR: ${LLM_VENDOR:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3-coder:14b}
+      # Optional: switch to cloud LLM by setting these env vars
+      SPRING_AI_GOOGLE_GENAI_API_KEY: ${SPRING_AI_GOOGLE_GENAI_API_KEY:-}
+      SPRING_AI_ANTHROPIC_API_KEY: ${SPRING_AI_ANTHROPIC_API_KEY:-}
+      SPRING_AI_OPENAI_API_KEY: ${SPRING_AI_OPENAI_API_KEY:-}
+      # GitHub token for private repos / higher rate limits
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    extra_hosts:
+      # Allows container to reach Ollama running on the Linux host GPU
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: vulnhawk-cloudflared
+    restart: unless-stopped
+    # Credentials created via: cloudflared tunnel create vulnhawk
+    # DNS route created via:   cloudflared tunnel route dns vulnhawk YOUR_DOMAIN
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared-config.yml:/etc/cloudflared/config.yml:ro
+      # Copy tunnel credentials JSON here:
+      # cp ~/.cloudflared/<tunnel-uuid>.json ./cloudflared-creds.json
+      - ./cloudflared-creds.json:/etc/cloudflared/vulnhawk.json:ro
+    depends_on:
+      vulnhawk:
+        condition: service_healthy

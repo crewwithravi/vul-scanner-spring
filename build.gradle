@@ -1,0 +1,50 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.0'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.ravi.vul'
+version = '0.0.1-SNAPSHOT'
+description = 'vul-scanner-spring'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://repo.spring.io/milestone' }
+    maven { url 'https://repo.spring.io/snapshot' }
+}
+
+ext {
+    set('springAiVersion', '1.1.2')
+}
+
+dependencies {
+    // Web (REST + static files)
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    // Spring AI BOM — manages all spring-ai artifact versions
+    implementation platform("org.springframework.ai:spring-ai-bom:${springAiVersion}")
+
+    // Spring AI — LLM backends (vendor selected at runtime via LLM_VENDOR env var)
+    implementation 'org.springframework.ai:spring-ai-starter-model-ollama'
+    implementation 'org.springframework.ai:spring-ai-starter-model-openai'
+    implementation 'org.springframework.ai:spring-ai-starter-model-anthropic'
+    implementation 'org.springframework.ai:spring-ai-starter-model-google-genai'
+
+    // Spring AI MCP Server — expose VulnHawk tools to Claude Code / Cursor / VS Code
+    implementation 'org.springframework.ai:spring-ai-starter-mcp-server-webmvc'
+
+    // Test
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

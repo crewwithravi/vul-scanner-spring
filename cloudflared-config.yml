@@ -1,0 +1,7 @@
+tunnel: vulnhawk
+credentials-file: /etc/cloudflared/vulnhawk.json
+
+ingress:
+  - hostname: vulnhawk.ravibuilds.com
+    service: http://vulnhawk:8080
+  - service: http_status:404
