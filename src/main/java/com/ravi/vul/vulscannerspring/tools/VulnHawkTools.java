@@ -200,7 +200,7 @@ public class VulnHawkTools {
         for (String config : List.of("runtimeClasspath", "compileClasspath")) {
             try {
                 List<String> cmd = List.of(gradlew, "dependencies",
-                    "--configuration", config, "--no-daemon", "-q");
+                    "--configuration", config, "--no-daemon", "--no-configuration-cache", "-q");
                 String output = runProcess(dir, cmd, 480, Map.of(
                     "GRADLE_USER_HOME", "/home/vulnhawk/.gradle",
                     "JAVA_HOME", System.getProperty("java.home")));
@@ -812,7 +812,7 @@ public class VulnHawkTools {
         }
         if (p.exitValue() != 0) {
             log.debug("Process exited {}: {} | {}", p.exitValue(), cmd.get(0),
-                      sb.toString().substring(0, Math.min(300, sb.length())).replace("\n", " "));
+                      sb.toString().substring(0, Math.min(1000, sb.length())).replace("\n", " "));
             return null;
         }
         return sb.toString();
