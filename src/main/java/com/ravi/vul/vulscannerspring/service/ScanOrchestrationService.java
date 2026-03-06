@@ -180,6 +180,7 @@ public class ScanOrchestrationService {
         log.info("Agent 1: Repo Scanner");
         String depsJson;
         String buildSystem = "unknown";
+        buildSystem = tools.detectBuildSystemDirect(Path.of(repoPath));
         try {
             String agent1Result = chatClient.prompt()
                 .system(REPO_SCANNER_SYSTEM)
@@ -190,15 +191,21 @@ public class ScanOrchestrationService {
                 .call()
                 .content();
             depsJson = extractJson(agent1Result);
-            // Also detect build system directly for the report
-            buildSystem = tools.detectBuildSystemDirect(Path.of(repoPath));
         } catch (Exception e) {
-            log.warn("Agent 1 (AI) failed, using direct tool calls: {}", e.getMessage());
-            buildSystem = tools.detectBuildSystemDirect(Path.of(repoPath));
+            log.debug("Agent 1 (AI) failed, using direct extraction: {}", e.getMessage());
             depsJson = tools.extractDependenciesDirect(Path.of(repoPath), buildSystem);
         }
 
-        return runPipelineFromDeps(parseJsonList(depsJson), repoPath);
+        // Fallback: if AI returned empty or prose instead of JSON, extract directly
+        List<Map<String, Object>> deps = parseJsonList(depsJson);
+        if (deps.isEmpty()) {
+            log.info("Agent 1 returned empty dep list, falling back to direct extraction");
+            depsJson = tools.extractDependenciesDirect(Path.of(repoPath), buildSystem);
+            deps = parseJsonList(depsJson);
+        }
+        log.info("Agent 1 extracted {} dependencies (build: {})", deps.size(), buildSystem);
+
+        return runPipelineFromDeps(deps, repoPath);
     }
 
     private String runPipelineFromDeps(List<Map<String, Object>> deps, String repoPath) throws Exception {
@@ -220,7 +227,7 @@ public class ScanOrchestrationService {
             Map<String, Object> check = om.readValue(vulnJson, Map.class);
             if (!check.containsKey("vulnerabilities")) throw new RuntimeException("Invalid vuln report");
         } catch (Exception e) {
-            log.warn("Agent 2 (AI) failed, using direct OSV check: {}", e.getMessage());
+            log.debug("Agent 2 (AI) fell back to direct OSV check: {}", e.getMessage());
             vulnJson = tools.checkOsvVulnerabilitiesDirect(depsJson);
         }
 
