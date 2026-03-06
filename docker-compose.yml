@@ -34,9 +34,12 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: vulnhawk-cloudflared
     restart: unless-stopped
-    # Credentials created via: cloudflared tunnel create vulnhawk
-    # DNS route created via:   cloudflared tunnel route dns vulnhawk YOUR_DOMAIN
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    # Config-file based routing — no dashboard needed
+    # Credentials: cp ~/.cloudflared/c7a01e00-*.json ./cloudflared-creds.json
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared-config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared-creds.json:/etc/cloudflared/vulnhawk.json:ro
     depends_on:
       vulnhawk:
         condition: service_healthy
