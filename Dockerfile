@@ -8,15 +8,15 @@ RUN gradle build -x test --no-daemon
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 
-RUN apk add --no-cache git maven && \
-    addgroup -S vulnhawk && adduser -S vulnhawk -G vulnhawk
+RUN apk add --no-cache git maven su-exec && \
+    addgroup -S vulnhawk && adduser -S vulnhawk -G vulnhawk && \
+    mkdir -p /home/vulnhawk/.gradle /home/vulnhawk/.m2
+
 COPY --from=build /app/build/libs/*.jar app.jar
-RUN chown vulnhawk:vulnhawk app.jar
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh && chown vulnhawk:vulnhawk app.jar
 
-USER vulnhawk
-EXPOSE 8080
+EXPOSE 9090
 
-ENTRYPOINT ["java", \
-  "-Xmx512m", \
-  "-Djava.security.egd=file:/dev/./urandom", \
-  "-jar", "app.jar"]
+# Entrypoint runs as root briefly to fix volume ownership, then su-exec to vulnhawk
+ENTRYPOINT ["/entrypoint.sh"]
