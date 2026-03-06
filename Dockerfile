@@ -8,7 +8,7 @@ RUN gradle build -x test --no-daemon
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 
-RUN apk add --no-cache git && \
+RUN apk add --no-cache git maven && \
     addgroup -S vulnhawk && adduser -S vulnhawk -G vulnhawk
 COPY --from=build /app/build/libs/*.jar app.jar
 RUN chown vulnhawk:vulnhawk app.jar
