@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -26,7 +27,7 @@ public class McpToolsService {
     private final ScanHistoryService history;
     private final VulnHawkTools tools;
 
-    public McpToolsService(ScanOrchestrationService orchestration,
+    public McpToolsService(@Lazy ScanOrchestrationService orchestration,
                            ScanHistoryService history,
                            VulnHawkTools tools) {
         this.orchestration = orchestration;
