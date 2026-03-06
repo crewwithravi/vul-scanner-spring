@@ -5,7 +5,7 @@ COPY . .
 RUN gradle build -x test --no-daemon
 
 # Stage 2 — Run (slim JRE image)
-FROM eclipse-temurin:17-jre-alpine
+FROM eclipse-temurin:17-jdk-alpine
 WORKDIR /app
 
 RUN apk add --no-cache git maven su-exec && \

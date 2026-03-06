@@ -201,9 +201,11 @@ public class VulnHawkTools {
             try {
                 List<String> cmd = List.of(gradlew, "dependencies",
                     "--configuration", config, "--no-daemon", "--no-configuration-cache", "-q");
+                String javaHome = System.getProperty("java.home");
                 String output = runProcess(dir, cmd, 480, Map.of(
                     "GRADLE_USER_HOME", "/home/vulnhawk/.gradle",
-                    "JAVA_HOME", System.getProperty("java.home")));
+                    "JAVA_HOME", javaHome,
+                    "JAVA_OPTS", "-Dorg.gradle.java.home=" + javaHome));
                 if (output != null && !output.isBlank()) {
                     List<Map<String, Object>> deps = parseGradleTree(output);
                     if (!deps.isEmpty()) return om.writeValueAsString(deps);
