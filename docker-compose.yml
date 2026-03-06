@@ -25,6 +25,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - maven-cache:/home/vulnhawk/.m2
+      - gradle-cache:/home/vulnhawk/.gradle
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
       interval: 30s
@@ -48,3 +49,4 @@ services:
 
 volumes:
   maven-cache:
+  gradle-cache:

@@ -200,8 +200,10 @@ public class VulnHawkTools {
         for (String config : List.of("runtimeClasspath", "compileClasspath")) {
             try {
                 List<String> cmd = List.of(gradlew, "dependencies",
-                    "--configuration", config, "--no-daemon");
-                String output = runProcess(dir, cmd, 180);
+                    "--configuration", config, "--no-daemon", "-q");
+                String output = runProcess(dir, cmd, 480, Map.of(
+                    "GRADLE_USER_HOME", "/home/vulnhawk/.gradle",
+                    "JAVA_HOME", System.getProperty("java.home")));
                 if (output != null && !output.isBlank()) {
                     List<Map<String, Object>> deps = parseGradleTree(output);
                     if (!deps.isEmpty()) return om.writeValueAsString(deps);
@@ -788,17 +790,32 @@ public class VulnHawkTools {
     // ── Private utilities ────────────────────────────────────────────────────
 
     private String runProcess(Path dir, List<String> cmd, int timeoutSec) throws Exception {
+        return runProcess(dir, cmd, timeoutSec, Map.of());
+    }
+
+    private String runProcess(Path dir, List<String> cmd, int timeoutSec, Map<String, String> env) throws Exception {
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(dir.toFile());
         pb.redirectErrorStream(true);
+        if (!env.isEmpty()) pb.environment().putAll(env);
         Process p = pb.start();
         StringBuilder sb = new StringBuilder();
         try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
             String line;
             while ((line = r.readLine()) != null) sb.append(line).append("\n");
         }
-        p.waitFor(timeoutSec, TimeUnit.SECONDS);
-        return p.exitValue() == 0 ? sb.toString() : null;
+        boolean finished = p.waitFor(timeoutSec, TimeUnit.SECONDS);
+        if (!finished) {
+            p.destroyForcibly();
+            log.debug("Process timed out after {}s: {}", timeoutSec, cmd.get(0));
+            return null;
+        }
+        if (p.exitValue() != 0) {
+            log.debug("Process exited {}: {} | {}", p.exitValue(), cmd.get(0),
+                      sb.toString().substring(0, Math.min(300, sb.length())).replace("\n", " "));
+            return null;
+        }
+        return sb.toString();
     }
 
     private String extractTag(String xml, String tag) {
