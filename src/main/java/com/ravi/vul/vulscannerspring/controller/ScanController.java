@@ -2,6 +2,7 @@ package com.ravi.vul.vulscannerspring.controller;
 
 import com.ravi.vul.vulscannerspring.model.HistoryItem;
 import com.ravi.vul.vulscannerspring.model.ScanRequest;
+import com.ravi.vul.vulscannerspring.service.PdfExportService;
 import com.ravi.vul.vulscannerspring.service.ScanHistoryService;
 import com.ravi.vul.vulscannerspring.service.ScanOrchestrationService;
 import org.slf4j.Logger;
@@ -21,6 +22,7 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicLong;
 
 @RestController
@@ -35,6 +37,7 @@ public class ScanController {
         volatile String result;
         volatile String error;
         volatile int step = 0; // 0-4, matches UI step dots
+        volatile Future<?> future;
     }
 
     private final Map<Long, ScanJob> jobs = new ConcurrentHashMap<>();
@@ -44,6 +47,7 @@ public class ScanController {
     // ── Dependencies ──────────────────────────────────────────────────────────
     private final ScanOrchestrationService orchestration;
     private final ScanHistoryService history;
+    private final PdfExportService pdfExport;
     private final RestClient http = RestClient.create();
 
     @Value("${vulnhawk.llm.vendor:ollama}")
@@ -73,9 +77,11 @@ public class ScanController {
     @Value("${spring.ai.google.genai.chat.options.model:gemini-3.1-pro-preview}")
     private String googleModel;
 
-    public ScanController(ScanOrchestrationService orchestration, ScanHistoryService history) {
+    public ScanController(ScanOrchestrationService orchestration, ScanHistoryService history,
+                          PdfExportService pdfExport) {
         this.orchestration = orchestration;
         this.history = history;
+        this.pdfExport = pdfExport;
     }
 
     // ── Health ───────────────────────────────────────────────────────────────
@@ -128,7 +134,7 @@ public class ScanController {
         final String githubUrl = request.github_url();
         final String depInput  = request.input();
 
-        scanExecutor.submit(() -> {
+        job.future = scanExecutor.submit(() -> {
             try {
                 String report;
                 String scanKey, displayName, inputType, buildSystem = "";
@@ -174,6 +180,43 @@ public class ScanController {
         if ("completed".equals(job.status)) resp.put("result", job.result);
         if ("failed".equals(job.status))    resp.put("error",  job.error);
         return ResponseEntity.ok(resp);
+    }
+
+    // ── Cancel scan ──────────────────────────────────────────────────────────
+
+    @DeleteMapping("/scan/{id}")
+    public ResponseEntity<Void> cancelScan(@PathVariable long id) {
+        ScanJob job = jobs.get(id);
+        if (job == null) return ResponseEntity.notFound().build();
+        if ("running".equals(job.status)) {
+            if (job.future != null) job.future.cancel(true);
+            job.status = "cancelled";
+            job.error = "Scan cancelled by user";
+            log.info("Scan job #{} cancelled", id);
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    // ── PDF export ────────────────────────────────────────────────────────────
+
+    @PostMapping(value = "/report/pdf", consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = "application/pdf")
+    public ResponseEntity<byte[]> exportPdf(@RequestBody Map<String, String> body) {
+        String reportMd = body.get("report_md");
+        if (reportMd == null || reportMd.isBlank())
+            return ResponseEntity.badRequest().build();
+        try {
+            byte[] pdf = pdfExport.generatePdf(reportMd);
+            String filename = "vulnhawk-report-" +
+                java.time.LocalDate.now().toString() + ".pdf";
+            return ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename=\"" + filename + "\"")
+                .header("Content-Length", String.valueOf(pdf.length))
+                .body(pdf);
+        } catch (Exception e) {
+            log.error("PDF generation failed", e);
+            return ResponseEntity.internalServerError().build();
+        }
     }
 
     // ── History ───────────────────────────────────────────────────────────────

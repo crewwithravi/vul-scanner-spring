@@ -40,6 +40,10 @@ dependencies {
     // Spring AI MCP Server — expose VulnHawk tools to Claude Code / Cursor / VS Code
     implementation 'org.springframework.ai:spring-ai-starter-mcp-server-webmvc'
 
+    // PDF export — Markdown → HTML → PDF
+    implementation 'com.vladsch.flexmark:flexmark:0.64.8'
+    implementation 'org.xhtmlrenderer:flying-saucer-pdf-openpdf:9.4.0'
+
     // Test
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

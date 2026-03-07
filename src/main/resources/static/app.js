@@ -9,6 +9,7 @@ let stepInterval = null;
 let lastReport = "";
 let currentDepFilter = "all";
 let currentTab = "report";
+let currentScanId = null;
 
 // ── Helpers ──────────────────────────────────────────────────────
 function $(sel) { return document.querySelector(sel); }
@@ -149,18 +150,37 @@ async function runScan() {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    currentScanId = scan_id;
     // Poll until done
     const data = await pollScanStatus(scan_id);
     stopStepAnimation();
     showResult(data.result);
   } catch (e) {
     stopStepAnimation();
-    showError(e.message);
+    if (e.message !== "cancelled") showError(e.message);
   } finally {
     btn.disabled = false;
+    currentScanId = null;
     clearInterval(elapsedInterval);
     elapsedInterval = null;
     $("#scan-loading").classList.add("hidden");
+  }
+}
+
+async function cancelScan() {
+  if (!currentScanId) return;
+  try {
+    await fetch(`${API}/scan/${currentScanId}`, { method: "DELETE" });
+    toast("Scan cancelled");
+    // resolve the poll loop by treating it as cancelled
+    currentScanId = null;
+    $("#scan-loading").classList.add("hidden");
+    $("#scan-btn").disabled = false;
+    clearInterval(elapsedInterval);
+    elapsedInterval = null;
+    stopStepAnimation();
+  } catch (e) {
+    toast("Cancel failed: " + e.message, true);
   }
 }
 
@@ -177,6 +197,9 @@ async function pollScanStatus(scanId) {
         } else if (data.status === "failed") {
           clearInterval(interval);
           reject(new Error(data.error || "Scan failed"));
+        } else if (data.status === "cancelled" || currentScanId === null) {
+          clearInterval(interval);
+          reject(new Error("cancelled"));
         }
         // "running" — keep polling
       } catch (e) {
@@ -396,6 +419,35 @@ function copyReport() {
   navigator.clipboard.writeText(lastReport)
     .then(() => toast("Report copied to clipboard"))
     .catch(() => toast("Copy failed", true));
+}
+
+async function downloadPdf() {
+  if (!lastReport) return;
+  const btn = $("#pdf-btn");
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Generating…';
+  try {
+    const resp = await fetch(`${API}/report/pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ report_md: lastReport }),
+    });
+    if (!resp.ok) throw new Error("PDF generation failed");
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `vulnhawk-report-${new Date().toISOString().slice(0,10)}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("PDF downloaded");
+  } catch (e) {
+    toast("PDF failed: " + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = orig;
+  }
 }
 
 function downloadReport() {
