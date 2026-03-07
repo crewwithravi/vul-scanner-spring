@@ -13,6 +13,7 @@ import java.io.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntConsumer;
 import java.util.regex.*;
 import java.util.stream.*;
 
@@ -96,10 +97,17 @@ public class ScanOrchestrationService {
         STEP 4 — CODE IMPACT:
           Call searchCodeUsage to find how the dependency is used in source code.
 
+        STEP 5 — DOCS CHECK (only if changelog shows breaking changes):
+          Call readProjectDocs with the repo path and the specific API names / class names
+          that changed (comma-separated searchTerms).
+          Use the result to determine whether this project actually uses the affected APIs.
+          If no matches found, the upgrade is safer. If matches found, flag them explicitly.
+
         For each vulnerable dependency, produce a structured upgrade recommendation including:
         - fix_via_parent flag and which parent to bump (if BOM-managed)
         - target version
         - breaking changes found
+        - whether the project uses affected APIs (from docs check)
         - confidence score
         - exact pom.xml / build.gradle change needed
 
@@ -138,8 +146,10 @@ public class ScanOrchestrationService {
         Include the exact pom.xml or build.gradle line to change for each fix.
         Use YES/NO in the "Safe to Upgrade" column.
 
-        At the very end include this line (with the actual list from the vulnerability data):
-        Dependency Allowlist: ["group:artifact:version", ...]
+        CRITICAL — these EXACT strings must appear verbatim in your output (the UI parses them):
+        1. In section 3: "- Vulnerable Count: N" (N = number of vulnerable deps)
+        2. Final line: Dependency Allowlist: ["group:artifact:version", ...]
+           (JSON array of all vulnerable dependency coordinates from the data)
         """;
 
     public ScanOrchestrationService(ChatClient chatClient, VulnHawkTools tools) {
@@ -151,11 +161,12 @@ public class ScanOrchestrationService {
 
     /**
      * Run a full scan from a GitHub URL (clone + 4-agent pipeline).
+     * progress: step index 0-4 sent before each major stage.
      */
-    public String scanFromUrl(String githubUrl) throws Exception {
+    public String scanFromUrl(String githubUrl, IntConsumer progress) throws Exception {
         Path tmpDir = cloneRepo(githubUrl);
         try {
-            return runPipeline(tmpDir.toString(), "url", githubUrl);
+            return runPipeline(tmpDir.toString(), "url", githubUrl, progress);
         } finally {
             deleteTempDir(tmpDir);
         }
@@ -165,22 +176,24 @@ public class ScanOrchestrationService {
      * Run a scan from a raw dependency list (group:artifact:version per line).
      * Skips Agent 1 — dep extraction is done directly from the input.
      */
-    public String scanFromDepList(String depInput) throws Exception {
+    public String scanFromDepList(String depInput, IntConsumer progress) throws Exception {
         List<Map<String, Object>> deps = parseDepList(depInput);
         if (deps.isEmpty()) throw new IllegalArgumentException("No valid dependencies in input.");
-        return runPipelineFromDeps(deps, null);
+        return runPipelineFromDeps(deps, null, progress);
     }
 
     // ── Pipeline ─────────────────────────────────────────────────────────────
 
-    private String runPipeline(String repoPath, String inputType, String source) throws Exception {
+    private String runPipeline(String repoPath, String inputType, String source, IntConsumer progress) throws Exception {
         log.info("Starting 4-agent scan pipeline for: {}", source);
 
         // ── Agent 1: Repo Scanner ──────────────────────────────────────────
+        progress.accept(0); // Detecting build system
         log.info("Agent 1: Repo Scanner");
         String depsJson;
         String buildSystem = "unknown";
         buildSystem = tools.detectBuildSystemDirect(Path.of(repoPath));
+        progress.accept(1); // Extracting dependencies
         try {
             String agent1Result = chatClient.prompt()
                 .system(REPO_SCANNER_SYSTEM)
@@ -205,13 +218,14 @@ public class ScanOrchestrationService {
         }
         log.info("Agent 1 extracted {} dependencies (build: {})", deps.size(), buildSystem);
 
-        return runPipelineFromDeps(deps, repoPath);
+        return runPipelineFromDeps(deps, repoPath, progress);
     }
 
-    private String runPipelineFromDeps(List<Map<String, Object>> deps, String repoPath) throws Exception {
+    private String runPipelineFromDeps(List<Map<String, Object>> deps, String repoPath, IntConsumer progress) throws Exception {
         String depsJson = om.writeValueAsString(deps);
 
         // ── Agent 2: Vulnerability Analyst ────────────────────────────────
+        progress.accept(2); // Checking OSV database
         log.info("Agent 2: Vulnerability Analyst — checking {} dependencies", deps.size());
         String vulnJson;
         try {
@@ -232,16 +246,18 @@ public class ScanOrchestrationService {
         }
 
         // ── Agent 3: Upgrade Strategist ────────────────────────────────────
+        progress.accept(3); // Looking up safe versions
         log.info("Agent 3: Upgrade Strategist");
         String upgradeAnalysis;
         try {
             String repoNote = repoPath != null
-                ? "\nRepository path for code search: " + repoPath : "";
+                ? "\nRepository path (use for searchCodeUsage and readProjectDocs): " + repoPath : "";
             String agent3Result = chatClient.prompt()
                 .system(UPGRADE_STRATEGIST_SYSTEM)
                 .user("Vulnerability Report:\n" + vulnJson + repoNote +
                       "\n\nFor each vulnerable dependency: call resolveBomParent, " +
-                      "lookupLatestSafeVersion, fetchChangelog, and searchCodeUsage. " +
+                      "lookupLatestSafeVersion, fetchChangelog, searchCodeUsage, " +
+                      "and readProjectDocs (if changelog shows breaking changes). " +
                       "Provide a structured upgrade recommendation.")
                 .tools(tools)
                 .call()
@@ -253,6 +269,7 @@ public class ScanOrchestrationService {
         }
 
         // ── Agent 4: Report Generator ──────────────────────────────────────
+        progress.accept(4); // Building report
         log.info("Agent 4: Report Generator");
         String report;
         try {
@@ -265,9 +282,13 @@ public class ScanOrchestrationService {
                 .call()
                 .content();
             report = cleanReport(agent4Result);
-            // Validate report has required sections
-            if (!report.contains("Vulnerable Count") || !report.contains("Dependency Allowlist")) {
-                throw new RuntimeException("Report missing required sections");
+            // Validate: must have headings and the machine-readable allowlist line
+            boolean hasHeadings = report.contains("## ");
+            boolean hasAllowlist = report.contains("Dependency Allowlist");
+            if (!hasHeadings || !hasAllowlist) {
+                log.warn("Agent 4 output missing required content (headings={}, allowlist={}), using deterministic report",
+                         hasHeadings, hasAllowlist);
+                report = buildFallbackReport(depsJson, vulnJson, repoPath);
             }
         } catch (Exception e) {
             log.warn("Agent 4 (AI) failed, using deterministic report: {}", e.getMessage());
@@ -316,6 +337,8 @@ public class ScanOrchestrationService {
                 // Code usage
                 if (repoPath != null) {
                     sb.append(tools.searchCodeUsageDirect(repoPath, g)).append("\n");
+                    // Docs check — search for artifact name in project docs/config
+                    sb.append(tools.readProjectDocsDirect(repoPath, a)).append("\n");
                 }
                 sb.append("\n");
             }

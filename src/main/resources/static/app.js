@@ -68,9 +68,12 @@ async function checkHealth() {
     const dot = h.status === "ok"
       ? '<span class="inline-block w-2.5 h-2.5 rounded-full bg-green-500 pulse-dot"></span>'
       : '<span class="inline-block w-2.5 h-2.5 rounded-full bg-yellow-500"></span>';
-    let label = h.llm_vendor === "google"
-      ? `gemini/${h.google?.api_key_set ? "ready" : "no key"}`
-      : `ollama/${h.ollama?.reachable ? "ready" : "offline"}`;
+    const v = h.llm_vendor;
+    let label;
+    if (v === "google-genai")  label = `gemini/${h.google?.api_key_set    ? "ready" : "no key"}`;
+    else if (v === "anthropic") label = `claude/${h.anthropic?.api_key_set ? "ready" : "no key"}`;
+    else if (v === "openai")    label = `openai/${h.openai?.api_key_set    ? "ready" : "no key"}`;
+    else                        label = `ollama/${h.ollama?.reachable       ? "ready" : "offline"}`;
     $("#health-badge").innerHTML = `${dot} <span class="text-gray-400 text-xs">${label}</span>`;
   } catch {
     $("#health-badge").innerHTML =
@@ -80,19 +83,8 @@ async function checkHealth() {
 }
 
 
-// ── Loading step animation ────────────────────────────────────────
+// ── Loading step display (driven by real server progress) ─────────
 const STEPS = ["s1", "s2", "s3", "s4", "s5"];
-let stepIdx = 0;
-const STEP_INTERVAL_MS = 30000; // advance every ~30s
-
-function startStepAnimation() {
-  stepIdx = 0;
-  setStep(0);
-  stepInterval = setInterval(() => {
-    stepIdx = Math.min(stepIdx + 1, STEPS.length - 1);
-    setStep(stepIdx);
-  }, STEP_INTERVAL_MS);
-}
 
 function setStep(idx) {
   STEPS.forEach((id, i) => {
@@ -101,26 +93,26 @@ function setStep(idx) {
     const label = el.nextElementSibling;
     if (i < idx) {
       el.className = "step-dot step-done";
-      if (label) { label.className = "step-label done"; }
+      if (label) label.className = "step-label done";
     } else if (i === idx) {
       el.className = "step-dot step-active";
-      if (label) { label.className = "step-label active"; }
+      if (label) label.className = "step-label active";
     } else {
       el.className = "step-dot step-wait";
-      if (label) { label.className = "step-label waiting"; }
+      if (label) label.className = "step-label waiting";
     }
   });
 }
 
+function startStepAnimation() { setStep(0); }
+
 function stopStepAnimation() {
-  clearInterval(stepInterval);
-  stepInterval = null;
   STEPS.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     el.className = "step-dot step-done";
     const label = el.nextElementSibling;
-    if (label) { label.className = "step-label done"; }
+    if (label) label.className = "step-label done";
   });
 }
 
@@ -175,6 +167,8 @@ async function pollScanStatus(scanId) {
     const interval = setInterval(async () => {
       try {
         const data = await api(`/scan/${scanId}/status`);
+        // Update step dots from real server progress
+        if (typeof data.step === "number") setStep(data.step);
         if (data.status === "completed") {
           clearInterval(interval);
           resolve(data);

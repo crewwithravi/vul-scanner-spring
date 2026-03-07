@@ -51,7 +51,7 @@ public class McpToolsService {
         log.info("[MCP] scan_repository: {}", github_url);
         try {
             String[] keyName = ScanHistoryService.scanKeyForUrl(github_url);
-            String report = orchestration.scanFromUrl(github_url);
+            String report = orchestration.scanFromUrl(github_url, step -> {});
             history.save(keyName[0], keyName[1], "url", "", report);
             return report;
         } catch (Exception e) {
@@ -77,7 +77,7 @@ public class McpToolsService {
         log.info("[MCP] scan_dependencies ({} chars)", dependencies.length());
         try {
             String[] keyName = ScanHistoryService.scanKeyForDeps(dependencies);
-            String report = orchestration.scanFromDepList(dependencies);
+            String report = orchestration.scanFromDepList(dependencies, step -> {});
             history.save(keyName[0], keyName[1], "dep-list", "", report);
             return report;
         } catch (Exception e) {

@@ -373,16 +373,23 @@ public class VulnHawkTools {
                         if (fix != null) fixed.add(fix.toString());
                     }
                 }
-                Object dbSev = ((Map<?, ?>) affMap.getOrDefault("database_specific", Map.of())).get("severity");
-                if (dbSev instanceof String s && List.of("LOW","MEDIUM","HIGH","CRITICAL").contains(s.toUpperCase()))
-                    severity = s.toUpperCase();
+                if ("UNKNOWN".equals(severity)) {
+                    Object dbSev = ((Map<?, ?>) affMap.getOrDefault("database_specific", Map.of())).get("severity");
+                    if (dbSev instanceof String s) severity = normaliseSeverity(s);
+                }
             }
+            // Check top-level database_specific.severity (some GHSA records put it there)
+            if ("UNKNOWN".equals(severity)) {
+                Object dbSev = ((Map<?, ?>) data.getOrDefault("database_specific", Map.of())).get("severity");
+                if (dbSev instanceof String s) severity = normaliseSeverity(s);
+            }
+            // Fall back to CVSS vector
             if ("UNKNOWN".equals(severity)) {
                 for (Object sevObj : (List<?>) data.getOrDefault("severity", List.of())) {
                     Map<String, Object> sev = (Map<String, Object>) sevObj;
-                    if ("CVSS_V3".equals(sev.get("type"))) {
+                    if ("CVSS_V3".equals(sev.get("type")) || "CVSS_V4".equals(sev.get("type"))) {
                         severity = cvssVectorToSeverity(str(sev, "score"));
-                        break;
+                        if (!"UNKNOWN".equals(severity)) break;
                     }
                 }
             }
@@ -736,30 +743,81 @@ public class VulnHawkTools {
     // ── TOOL 8: Read Project Docs ────────────────────────────────────────────
 
     @Tool(description =
-        "Reads project documentation (README, CHANGELOG, CONTRIBUTING) from a repository " +
-        "to find any information about dependency requirements or upgrade notes. " +
-        "Input: repoPath — absolute path to the repository root. " +
-        "Returns up to 4000 characters of found documentation.")
-    public String readProjectDocs(String repoPath) {
+        "Reads project documentation, config files, and source to find usages of specific APIs. " +
+        "Input: repoPath (absolute path to repo root), searchTerms (comma-separated list of " +
+        "API names, class names, or feature keywords to search for — e.g. 'ObjectMapper,JsonParser'). " +
+        "Searches README, docs/, and src/main/resources/ config files. " +
+        "Returns up to 50 contextual matches (±2 lines) across those files.")
+    public String readProjectDocs(String repoPath, String searchTerms) {
         repoPath = sanitizePath(repoPath);
         Path dir = Path.of(repoPath);
         if (!Files.isDirectory(dir)) return "ERROR: Directory not found: " + repoPath;
 
-        List<String> docFiles = List.of("README.md", "README.adoc", "README.txt", "README",
-            "CHANGELOG.md", "CHANGELOG", "CONTRIBUTING.md");
-        StringBuilder sb = new StringBuilder();
-        for (String name : docFiles) {
+        List<String> terms = Arrays.stream(searchTerms.split(","))
+            .map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toList());
+        if (terms.isEmpty()) return "ERROR: searchTerms must not be empty.";
+
+        // Collect files to search
+        List<Path> filesToSearch = new ArrayList<>();
+        for (String name : List.of("README.md", "README.adoc", "README.rst", "README.txt",
+                "README", "CONFIGURATION.md", "SETUP.md")) {
             Path p = dir.resolve(name);
-            if (!Files.exists(p)) continue;
-            try {
-                String content = Files.readString(p);
-                sb.append("=== ").append(name).append(" ===\n");
-                sb.append(content, 0, Math.min(2000, content.length()));
-                sb.append("\n\n");
-                if (sb.length() > 4000) break;
+            if (Files.isRegularFile(p)) filesToSearch.add(p);
+        }
+        for (String docDir : List.of("docs", "doc", "documentation")) {
+            Path sub = dir.resolve(docDir);
+            if (Files.isDirectory(sub)) {
+                try (var walk = Files.walk(sub, 4)) {
+                    walk.filter(Files::isRegularFile).forEach(filesToSearch::add);
+                } catch (IOException ignored) {}
+            }
+        }
+        Path resources = dir.resolve("src/main/resources");
+        if (Files.isDirectory(resources)) {
+            try (var stream = Files.list(resources)) {
+                stream.filter(p -> {
+                    String n = p.getFileName().toString();
+                    return n.endsWith(".yml") || n.endsWith(".yaml") ||
+                           n.endsWith(".properties") || n.endsWith(".xml");
+                }).forEach(filesToSearch::add);
             } catch (IOException ignored) {}
         }
-        return sb.isEmpty() ? "No documentation files found." : sb.toString();
+
+        List<Map<String, Object>> matches = new ArrayList<>();
+        for (Path file : filesToSearch) {
+            if (matches.size() >= 50) break;
+            try {
+                List<String> lines = Files.readAllLines(file);
+                for (int i = 0; i < lines.size() && matches.size() < 50; i++) {
+                    String line = lines.get(i);
+                    for (String term : terms) {
+                        if (line.toLowerCase().contains(term.toLowerCase())) {
+                            int from = Math.max(0, i - 2);
+                            int to = Math.min(lines.size(), i + 3);
+                            String ctx = String.join("\n", lines.subList(from, to));
+                            Map<String, Object> m = new LinkedHashMap<>();
+                            m.put("file", dir.relativize(file).toString());
+                            m.put("line", i + 1);
+                            m.put("term", term);
+                            m.put("context", ctx.length() > 500 ? ctx.substring(0, 500) : ctx);
+                            matches.add(m);
+                            break; // one match per line
+                        }
+                    }
+                }
+            } catch (IOException ignored) {}
+        }
+
+        if (matches.isEmpty()) {
+            return "No mentions of [" + searchTerms + "] found in project docs or config. " +
+                   "The project may not directly use affected features — upgrade is likely safer.";
+        }
+        try {
+            return new ObjectMapper().writeValueAsString(Map.of(
+                "search_terms", terms, "match_count", matches.size(), "matches", matches));
+        } catch (Exception e) {
+            return matches.toString();
+        }
     }
 
     // ── Public helpers used by ScanOrchestrationService ─────────────────────
@@ -787,6 +845,10 @@ public class VulnHawkTools {
 
     public String searchCodeUsageDirect(String repoPath, String pkg) {
         return searchCodeUsage(repoPath, pkg);
+    }
+
+    public String readProjectDocsDirect(String repoPath, String searchTerms) {
+        return readProjectDocs(repoPath, searchTerms);
     }
 
     // ── Private utilities ────────────────────────────────────────────────────
@@ -838,6 +900,17 @@ public class VulnHawkTools {
     private String toJson(Object obj) {
         try { return om.writeValueAsString(obj); }
         catch (Exception e) { return "{}"; }
+    }
+
+    private static String normaliseSeverity(String raw) {
+        if (raw == null) return "UNKNOWN";
+        return switch (raw.toUpperCase()) {
+            case "CRITICAL" -> "CRITICAL";
+            case "HIGH"     -> "HIGH";
+            case "MODERATE", "MEDIUM" -> "MEDIUM";
+            case "LOW"      -> "LOW";
+            default         -> "UNKNOWN";
+        };
     }
 
     private static String cvssVectorToSeverity(String vector) {

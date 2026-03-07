@@ -34,6 +34,7 @@ public class ScanController {
         volatile String status = "running";
         volatile String result;
         volatile String error;
+        volatile int step = 0; // 0-4, matches UI step dots
     }
 
     private final Map<Long, ScanJob> jobs = new ConcurrentHashMap<>();
@@ -119,12 +120,12 @@ public class ScanController {
                     String[] kn = ScanHistoryService.scanKeyForUrl(githubUrl);
                     scanKey = kn[0]; displayName = kn[1]; inputType = "url";
                     log.info("Scan job #{}: GitHub URL = {}", jobId, githubUrl);
-                    report = orchestration.scanFromUrl(githubUrl);
+                    report = orchestration.scanFromUrl(githubUrl, step -> job.step = step);
                 } else {
                     String[] kn = ScanHistoryService.scanKeyForDeps(depInput);
                     scanKey = kn[0]; displayName = kn[1]; inputType = "dep-list";
                     log.info("Scan job #{}: dep list ({} chars)", jobId, depInput.length());
-                    report = orchestration.scanFromDepList(depInput);
+                    report = orchestration.scanFromDepList(depInput, step -> job.step = step);
                 }
 
                 history.save(scanKey, displayName, inputType, buildSystem, report);
@@ -152,6 +153,7 @@ public class ScanController {
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("scan_id", id);
         resp.put("status", job.status);
+        resp.put("step", job.step);
         if ("completed".equals(job.status)) resp.put("result", job.result);
         if ("failed".equals(job.status))    resp.put("error",  job.error);
         return ResponseEntity.ok(resp);
