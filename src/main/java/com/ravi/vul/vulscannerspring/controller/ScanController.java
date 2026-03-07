@@ -58,11 +58,20 @@ public class ScanController {
     @Value("${spring.ai.openai.api-key:}")
     private String openAiKey;
 
+    @Value("${spring.ai.openai.chat.options.model:gpt-4o}")
+    private String openAiModel;
+
     @Value("${spring.ai.anthropic.api-key:}")
     private String anthropicKey;
 
+    @Value("${spring.ai.anthropic.chat.options.model:claude-sonnet-4-6}")
+    private String anthropicModel;
+
     @Value("${spring.ai.google.genai.api-key:}")
     private String googleKey;
+
+    @Value("${spring.ai.google.genai.chat.options.model:gemini-3.1-pro-preview}")
+    private String googleModel;
 
     public ScanController(ScanOrchestrationService orchestration, ScanHistoryService history) {
         this.orchestration = orchestration;
@@ -77,6 +86,15 @@ public class ScanController {
         resp.put("status", "ok");
         resp.put("llm_vendor", llmVendor);
 
+        // Active model — what will actually be called for scans
+        String activeModel = switch (llmVendor) {
+            case "google-genai" -> googleModel;
+            case "anthropic"    -> anthropicModel;
+            case "openai"       -> openAiModel;
+            default             -> ollamaModel;
+        };
+        resp.put("active_model", activeModel);
+
         Map<String, Object> ollamaStatus = new LinkedHashMap<>();
         ollamaStatus.put("base_url", ollamaBaseUrl);
         ollamaStatus.put("model", ollamaModel);
@@ -85,12 +103,11 @@ public class ScanController {
             ollamaStatus.put("reachable", true);
         } catch (Exception e) {
             ollamaStatus.put("reachable", false);
-            ollamaStatus.put("error", e.getMessage());
         }
         resp.put("ollama", ollamaStatus);
-        resp.put("openai",    Map.of("api_key_set", !openAiKey.isBlank()));
-        resp.put("anthropic", Map.of("api_key_set", !anthropicKey.isBlank()));
-        resp.put("google",    Map.of("api_key_set", !googleKey.isBlank()));
+        resp.put("openai",    Map.of("api_key_set", !openAiKey.isBlank(),    "model", openAiModel));
+        resp.put("anthropic", Map.of("api_key_set", !anthropicKey.isBlank(), "model", anthropicModel));
+        resp.put("google",    Map.of("api_key_set", !googleKey.isBlank(),    "model", googleModel));
 
         return ResponseEntity.ok(resp);
     }

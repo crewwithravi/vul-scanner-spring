@@ -42,6 +42,18 @@ public class ScanOrchestrationService {
     @Value("${vulnhawk.llm.vendor:ollama}")
     private String llmVendor;
 
+    @Value("${spring.ai.google.genai.chat.options.model:gemini-3.1-pro-preview}")
+    private String googleModel;
+
+    @Value("${spring.ai.anthropic.chat.options.model:claude-sonnet-4-6}")
+    private String anthropicModel;
+
+    @Value("${spring.ai.openai.chat.options.model:gpt-4o}")
+    private String openAiModel;
+
+    @Value("${spring.ai.ollama.chat.model:llama3.1}")
+    private String ollamaModel;
+
     // ── System prompts (translated from Python agents.py) ───────────────────
 
     private static final String REPO_SCANNER_SYSTEM = """
@@ -157,6 +169,15 @@ public class ScanOrchestrationService {
         this.tools = tools;
     }
 
+    private String activeModel() {
+        return switch (llmVendor) {
+            case "google-genai" -> googleModel;
+            case "anthropic"    -> anthropicModel;
+            case "openai"       -> openAiModel;
+            default             -> ollamaModel;
+        };
+    }
+
     // ── Public API ───────────────────────────────────────────────────────────
 
     /**
@@ -185,7 +206,7 @@ public class ScanOrchestrationService {
     // ── Pipeline ─────────────────────────────────────────────────────────────
 
     private String runPipeline(String repoPath, String inputType, String source, IntConsumer progress) throws Exception {
-        log.info("Starting 4-agent scan pipeline for: {}", source);
+        log.info("Starting 4-agent scan pipeline for: {} | LLM: {} / {}", source, llmVendor, activeModel());
 
         // ── Agent 1: Repo Scanner ──────────────────────────────────────────
         progress.accept(0); // Detecting build system
@@ -195,6 +216,7 @@ public class ScanOrchestrationService {
         buildSystem = tools.detectBuildSystemDirect(Path.of(repoPath));
         progress.accept(1); // Extracting dependencies
         try {
+            log.info("Agent 1 → calling {} / {} (tool: extractDependencies)", llmVendor, activeModel());
             String agent1Result = chatClient.prompt()
                 .system(REPO_SCANNER_SYSTEM)
                 .user("Repository path: " + repoPath +
@@ -229,6 +251,7 @@ public class ScanOrchestrationService {
         log.info("Agent 2: Vulnerability Analyst — checking {} dependencies", deps.size());
         String vulnJson;
         try {
+            log.info("Agent 2 → calling {} / {} (tool: checkOsvVulnerabilities)", llmVendor, activeModel());
             String agent2Result = chatClient.prompt()
                 .system(VULN_ANALYST_SYSTEM)
                 .user("Check ALL of these dependencies against the OSV database:\n\n" + depsJson +
@@ -250,6 +273,7 @@ public class ScanOrchestrationService {
         log.info("Agent 3: Upgrade Strategist");
         String upgradeAnalysis;
         try {
+            log.info("Agent 3 → calling {} / {} (tools: resolveBomParent, lookupLatestSafeVersion, fetchChangelog, searchCodeUsage, readProjectDocs)", llmVendor, activeModel());
             String repoNote = repoPath != null
                 ? "\nRepository path (use for searchCodeUsage and readProjectDocs): " + repoPath : "";
             String agent3Result = chatClient.prompt()
@@ -273,6 +297,7 @@ public class ScanOrchestrationService {
         log.info("Agent 4: Report Generator");
         String report;
         try {
+            log.info("Agent 4 → calling {} / {} (no tools — report generation only)", llmVendor, activeModel());
             String agent4Result = chatClient.prompt()
                 .system(REPORT_GENERATOR_SYSTEM)
                 .user("Full dependency list (JSON):\n" + depsJson +

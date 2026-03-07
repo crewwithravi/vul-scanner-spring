@@ -69,11 +69,13 @@ async function checkHealth() {
       ? '<span class="inline-block w-2.5 h-2.5 rounded-full bg-green-500 pulse-dot"></span>'
       : '<span class="inline-block w-2.5 h-2.5 rounded-full bg-yellow-500"></span>';
     const v = h.llm_vendor;
+    const m = h.active_model || "";
     let label;
-    if (v === "google-genai")  label = `gemini/${h.google?.api_key_set    ? "ready" : "no key"}`;
-    else if (v === "anthropic") label = `claude/${h.anthropic?.api_key_set ? "ready" : "no key"}`;
-    else if (v === "openai")    label = `openai/${h.openai?.api_key_set    ? "ready" : "no key"}`;
-    else                        label = `ollama/${h.ollama?.reachable       ? "ready" : "offline"}`;
+    if (v === "google-genai")   label = `gemini · ${m}`;
+    else if (v === "anthropic") label = `claude · ${m}`;
+    else if (v === "openai")    label = `openai · ${m}`;
+    else                        label = `ollama · ${m} / ${h.ollama?.reachable ? "ready" : "offline"}`;
+    console.info("[VulnHawk] LLM vendor:", v, "| model:", m, "| health:", h);
     $("#health-badge").innerHTML = `${dot} <span class="text-gray-400 text-xs">${label}</span>`;
   } catch {
     $("#health-badge").innerHTML =
